@@ -38,7 +38,9 @@ services:
       test: curl --fail http://localhost:3000/healthz
       interval: 5s
       timeout: 5s
-      retries: 20
+      retries: 30
+      # Cover Twenty's first-boot DB migration (~90-120s) before failures count.
+      start_period: 120s
 
   worker:
     image: twentycrm/twenty:${TAG:-latest}
