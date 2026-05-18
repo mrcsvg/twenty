@@ -1,0 +1,4 @@
+{$CRM_DOMAIN} {
+    reverse_proxy server:3000
+    encode gzip zstd
+}

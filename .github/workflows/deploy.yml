@@ -1,0 +1,67 @@
+name: Deploy Twenty CRM to GCP
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'infra/**'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write   # required for WIF OIDC token
+
+concurrency:
+  group: deploy-twenty-crm
+  cancel-in-progress: false
+
+env:
+  GCP_PROJECT_ID: s0c7-dev-crm-seed
+  GCP_ZONE: southamerica-east1-a
+  GCP_REGION: southamerica-east1
+  VM_NAME: twenty-crm
+  WIF_POOL: github-actions-pool
+  WIF_PROVIDER: github
+  DEPLOY_SA: gh-deploy@s0c7-dev-crm-seed.iam.gserviceaccount.com
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud (WIF)
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+          workload_identity_provider: projects/${{ vars.GCP_PROJECT_NUMBER }}/locations/global/workloadIdentityPools/${{ env.WIF_POOL }}/providers/${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.DEPLOY_SA }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Pull latest fork and redeploy on VM (via IAP SSH)
+        run: |
+          gcloud compute ssh "$VM_NAME" \
+            --zone="$GCP_ZONE" --tunnel-through-iap --quiet \
+            --command 'sudo git -C /opt/twenty fetch --depth=1 origin main && sudo git -C /opt/twenty reset --hard origin/main && sudo bash /opt/twenty/infra/deploy.sh'
+
+      - name: Smoke test (/healthz must return 200)
+        run: |
+          IP=$(gcloud compute instances describe "$VM_NAME" \
+                --zone="$GCP_ZONE" \
+                --format='value(networkInterfaces[0].accessConfigs[0].natIP)')
+          DOMAIN="crm.${IP//./-}.nip.io"
+          echo "Probing https://${DOMAIN}/healthz"
+          for i in $(seq 1 60); do
+            if curl -fsS --max-time 5 "https://${DOMAIN}/healthz" >/dev/null; then
+              echo "✓ healthy after ${i} attempt(s)"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "✗ healthcheck failed after 5 minutes"
+          exit 1
